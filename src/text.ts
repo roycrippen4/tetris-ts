@@ -43,7 +43,7 @@ export const pauseText = `
                    ${red('[q]')}: Quit
        ${controls}`;
 
-export const title = `
+export const title = (debug?: boolean) => `
 ${purple('──┘')}${yellow(' └───────────────────────────────────────────────┘ ')}${blue('└──')}
 ${cyan('──┐ ')}${green('┌───────────────────────────────────────────────┐')} ${red('┌──')}
 ${cyan('  │ ')}${green('│')} ████████╗███████╗████████╗██████╗ ██╗███████╗ ${green('│')} ${red('│')}
@@ -58,6 +58,7 @@ ${red('  │')} ${purple('│')}     A ${strikethrough(italic('shitty'))} remake
 
                  Press ${green('enter')} to start
                  Press ${yellow('?')} to toggle controls 
+                 Press ${cyan('g')} to toggle debug mode ${debug ? green('󰄱') : green('󰄲')}
                  Press ${red('ctrl + c')} to exit
 `;
 

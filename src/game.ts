@@ -673,15 +673,20 @@ class Game {
 	#debugScore = () => console.log(`Score: ${yellow(this.score.toString())}`);
 	#debugSpeed = () => console.log(`Speed: ${yellow(this.speed.toString())}`);
 
+	toggleDebug() {
+		this.debugging = !this.debugging;
+		this.titleScreen();
+	}
+
 	titleScreen() {
 		this.#resetState();
 
 		if (!this.help) {
 			console.clear();
-			console.log(title);
+			console.log(title(!this.debugging));
 		} else {
 			console.clear();
-			console.log(title.concat(controls));
+			console.log(title(!this.debugging).concat(controls));
 		}
 	}
 }
@@ -695,6 +700,7 @@ onkeydown((event) => {
 		game.titleScreen();
 	}
 
+	event.name === 'g' && !game.started && !game.over && game.toggleDebug();
 	event.name === 'return' && !game.started && !game.over && game.newGame();
 	event.name === 'p' && game.started && game.pause();
 	event.name === 'space' && game.started && !game.paused && game.current.instaDrop(game);
