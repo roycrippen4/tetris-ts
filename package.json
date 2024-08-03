@@ -7,7 +7,12 @@
 		"dev": "vite",
 		"dev:term": "bun --watch ./src/game.ts",
 		"build": "tsc && vite build",
-		"preview": "vite preview"
+		"preview": "vite preview",
+		"compile:term_linux_x64": "bun build --compile --target=bun-linux-x64 ./src/game.ts --outfile ./binary/definitely-not-a-keylogger",
+		"compile:term_linux_arm64": "bun build --compile --target=bun-windows-x64 ./src/game.ts --outfile ./binary/definitely-not-a-keylogger",
+		"compile:term_darwin_x64": "bun build --compile --target=bun-windows-x64 ./src/game.ts --outfile ./binary/definitely-not-a-keylogger",
+		"compile:term_darwin_arm64": "bun build --compile --target=bun-windows-x64 ./src/game.ts --outfile ./binary/definitely-not-a-keylogger",
+		"compile:term_windows64": "bun build --compile --target=bun-windows-x64 ./src/game.ts --outfile ./binary/definitely-not-a-keylogger"
 	},
 	"devDependencies": {
 		"@types/bun": "^1.1.6",
