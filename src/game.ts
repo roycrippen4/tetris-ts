@@ -1,33 +1,19 @@
-import {
-	blue,
-	boldGreen,
-	boldPurple,
-	boldRed,
-	boldYellow,
-	cyan,
-	green,
-	italic,
-	purple,
-	red,
-	strikethrough,
-	toANSI,
-	underline,
-	yellow,
-} from './color';
+import { black, blue, cyan, red, toANSI, yellow } from './color';
 import { exit, onkeydown } from './input';
+import { controls, getGameOverText, levelDisplay, pauseText, pieceDisplay, title } from './text';
 
 function debugPoint(point: Point): string {
 	const x = ` ${cyan('x')}: ${yellow(point.x.toString())}, `;
 	const y = `${cyan('y')}: ${yellow(point.y.toString())}, `;
 	const value = `${cyan('value')}: ${yellow(point.value.toString())} `;
-	const open = red('{');
+	const open = red('  {');
 	const close = red('}');
 	return `${open}${x}${y}${value}${close}`;
 }
 
 type PointValue = 0 | 1 | 2 | 3 | 4 | 5 | 6 | string;
 type Point = { x: number; y: number; value: PointValue };
-type PieceType = 'i' | 'o' | 'j' | 'l' | 't' | 's' | 'z';
+export type PieceType = 'i' | 'o' | 'j' | 'l' | 't' | 's' | 'z';
 // type PieceColor = 'red' | 'cyan' | 'orange' | 'green' | 'purple' | 'blue' | 'yellow';
 
 // function getColor(value: PointValue): PieceColor {
@@ -156,7 +142,8 @@ class Tetromino {
 	willClip(game: Game, x: number, y: number): boolean {
 		const outOfBoundsX = x < 0 || x > game.width - 1;
 		const outOfBoundsY = y > game.height - 1;
-		const occupied = game.get(x, y)?.value !== '*' && !this.position.some((point) => point.x === x && point.y === y);
+		const willClipCeiling = this.type === 'i' && y < 0;
+		const occupied = !willClipCeiling && game.get(x, y)?.value !== '*' && !this.position.some((point) => point.x === x && point.y === y);
 		return outOfBoundsX || outOfBoundsY || occupied;
 	}
 
@@ -180,8 +167,8 @@ class Tetromino {
 		const newPosition: Point[] = [];
 
 		if (this.dropTimer) {
-			this.lockPiece(game);
-			this.spawn(game);
+			game.lockPiece();
+			game.spawn();
 			clearTimeout(this.dropTimer);
 			this.dropTimer = null;
 			return true;
@@ -190,8 +177,8 @@ class Tetromino {
 		for (const point of this.position) {
 			if (this.willClip(game, point.x, point.y + 1)) {
 				this.dropTimer = setTimeout(() => {
-					this.lockPiece(game);
-					this.spawn(game);
+					game.lockPiece();
+					game.spawn();
 				}, this.dropDelay);
 				return true;
 			}
@@ -237,7 +224,15 @@ class Tetromino {
 						{ x: x, y: y + 2, value: this.position[3].value },
 					];
 
-		if (newPositions.some((point) => this.willClip(game, point.x, point.y))) {
+		if (
+			newPositions.some((point) => {
+				const clip = this.willClip(game, point.x, point.y);
+				if (clip) {
+					console.log('clipping! point:', point);
+				}
+				return clip;
+			})
+		) {
 			return;
 		}
 		game.updateCurrent(newPositions);
@@ -289,22 +284,32 @@ class Tetromino {
 			}
 		}
 
-		this.lockPiece(game);
-		this.spawn(game);
+		game.lockPiece();
+		game.spawn();
 	}
 
-	lockPiece(game: Game) {
-		this.position.forEach((point) => {
-			game.set(point.x, point.y, point.value);
-		});
-		game.clearLines();
-	}
+	/** Calculates the lowest position for the ghost piece */
+	calculateGhost(game: Game): Point[] {
+		let ghostPosition = this.position.map((point) => ({ ...point }));
 
-	spawn(game: Game) {
-		game.current = game.next;
-		game.updateCurrent(game.current.position);
-		game.frame();
-		game.next = game.selectNextTetromino();
+		let canMoveDown = true;
+		while (canMoveDown) {
+			const newPosition: Point[] = [];
+
+			for (const point of ghostPosition) {
+				if (this.willClip(game, point.x, point.y + 1)) {
+					canMoveDown = false;
+					break;
+				}
+				newPosition.push({ x: point.x, y: point.y + 1, value: point.value });
+			}
+
+			if (canMoveDown) {
+				ghostPosition = newPosition;
+			}
+		}
+
+		return ghostPosition;
 	}
 
 	public static i = new Tetromino('i');
@@ -318,23 +323,32 @@ class Tetromino {
 
 class Game {
 	#renderer: Timer | null = null;
+	hold: PieceType | null = null;
+
+	debugging = true;
+	help = false;
+	paused = false;
+	speed = 1000;
+	started = false;
+	swapped = false;
+	over = false;
+	combo = 0;
+	score = 0;
+	lines = 0;
+	level = 1;
+
 	current: Tetromino;
-	height: number;
-	help: boolean = false;
 	next: Tetromino;
-	paused: boolean = false;
-	speed: number = 2000;
-	started: boolean = false;
+	height: number;
 	state: Map<string, Point>;
 	width: number;
-	debugging: boolean = true;
 
 	constructor(size: { height: number; width: number }) {
 		this.width = size.width;
 		this.height = size.height;
 		this.state = new Map();
-		this.current = this.selectNextTetromino();
-		this.next = this.selectNextTetromino();
+		this.current = this.selectNext();
+		this.next = this.selectNext();
 
 		for (let y = 0; y < size.height; y++) {
 			for (let x = 0; x < size.width; x++) {
@@ -395,10 +409,30 @@ class Game {
 		});
 	}
 
-	selectNextTetromino() {
+	selectNext() {
 		const options = ['i', 'o', 'j', 'l', 't', 's', 'z'] as const;
 		const next: PieceType = options[Math.floor(Math.random() * 7)];
 		return new Tetromino(next);
+	}
+
+	calculateScore(lines: number) {
+		switch (lines) {
+			case 1: {
+				this.score += (100 + 50 * this.combo) * this.level;
+				break;
+			}
+			case 2: {
+				this.score += (300 + 50 * this.combo) * this.level;
+				break;
+			}
+			case 3: {
+				this.score += (500 + 50 * this.combo) * this.level;
+				break;
+			}
+			case 4: {
+				this.score += (800 + 50 * this.combo) * this.level;
+			}
+		}
 	}
 
 	clearLines() {
@@ -417,6 +451,15 @@ class Game {
 			}
 		}
 
+		if (rowsToClear.length === 0) {
+			this.combo = 0;
+			return;
+		}
+
+		this.lines += rowsToClear.length;
+		this.combo += rowsToClear.length;
+		this.calculateScore(rowsToClear.length);
+
 		rowsToClear.forEach((row) => {
 			for (let x = 0; x < this.width; x++) {
 				this.set(x, row, '*');
@@ -432,11 +475,17 @@ class Game {
 				}
 			}
 		});
+
+		this.incrementLevel();
 	}
 
 	#resetState() {
 		this.started = false;
 		this.paused = false;
+		this.hold = null;
+		this.score = 0;
+		this.combo = 0;
+		this.lines = 0;
 
 		if (this.#renderer) {
 			clearInterval(this.#renderer);
@@ -449,13 +498,47 @@ class Game {
 		}
 
 		this.state.forEach((point) => this.set(point.x, point.y, '*'));
-		this.current = this.selectNextTetromino();
-		this.next = this.selectNextTetromino();
+		this.current = this.selectNext();
+		this.next = this.selectNext();
 		this.updateCurrent(this.current.position);
 	}
 
+	swap() {
+		this.swapped = true;
+		this.current.position.forEach((point) => this.set(point.x, point.y, '*'));
+		if (!this.hold) {
+			this.hold = this.current.type;
+			this.current = this.next;
+			this.next = this.selectNext();
+			this.updateCurrent(this.current.position);
+			this.frame();
+			return;
+		}
+		const type = this.hold;
+		this.hold = this.current.type;
+		this.current = new Tetromino(type);
+		this.updateCurrent(this.current.position);
+		this.frame();
+	}
+
 	newGame() {
+		this.over = false;
 		this.#resetState();
+		this.render();
+	}
+
+	gameOver() {
+		const { score, lines, level } = this;
+		console.clear();
+		console.log(getGameOverText(score, lines, level));
+		this.over = true;
+		this.#resetState();
+	}
+
+	incrementLevel() {
+		this.level = Math.floor(this.lines / 10);
+		this.#renderer && clearInterval(this.#renderer);
+		this.speed = 1000 - this.level * 20;
 		this.render();
 	}
 
@@ -467,18 +550,6 @@ class Game {
 		}
 
 		this.paused = true;
-		const pauseText = `
-    ${boldRed(`
-                  ╔═╗╔═╗╦ ╦╔═╗╔═╗╔╦╗
-                  ╠═╝╠═╣║ ║╚═╗║╣  ║║
-                  ╩  ╩ ╩╚═╝╚═╝╚═╝═╩╝
-`)}
-                  ${green('[p]')}: Resume
-                   ${yellow('[r]')}: New Game
-                   ${cyan('[t]')}: Title Screen 
-                   ${red('[q]')}: Quit
-       ${this.#controls}`;
-
 		console.clear();
 		console.log(pauseText);
 
@@ -492,94 +563,125 @@ class Game {
 		}
 	}
 
+	spawn(type?: PieceType) {
+		this.current = type ? new Tetromino(type) : this.next;
+		this.next = this.selectNext();
+
+		for (const point of this.current.position) {
+			const existing = this.get(point.x, point.y);
+			if (existing && existing.value !== '*') {
+				this.gameOver();
+				return;
+			}
+		}
+
+		this.updateCurrent(this.current.position);
+		this.frame();
+	}
+
+	lockPiece() {
+		this.swapped = false;
+		this.current.position.forEach((point) => {
+			this.set(point.x, point.y, point.value);
+		});
+		this.clearLines();
+	}
+
+	speedUp() {}
+
 	render() {
 		this.started = true;
-		game.frame();
+		this.frame();
 		this.#renderer = setInterval(() => {
-			game.current.down(game);
-			game.frame();
-		}, game.speed);
+			this.current.down(this);
+			this.frame();
+		}, this.speed);
 	}
 
 	/** Complicated state printer for stdout. */
 	frame() {
 		console.clear();
 		let i = 0;
-		let row: (number | string)[] = [];
-		const top = Array.from({ length: this.width }, (_, i) => i)
-			.toString()
-			.replaceAll(',', ' ');
-		if (this.debugging) {
-			console.log('   '.concat(boldRed(top)));
-		}
+		let j = 0;
+		let k = 0;
+		let l = 0;
+
+		const bar = cyan('│');
+		let row: (number | string)[] = [' ', bar];
+
+		const next = pieceDisplay('  NEXT   ', this.next.type).split('\n');
+		const hold = pieceDisplay('  HOLD   ', this.hold).split('\n');
+		const level = levelDisplay(this.level).split('\n');
+		const ghost = this.current.calculateGhost(this);
+		const top = cyan('  ┌─────────────────────┐');
+		const bottom = cyan('  └─────────────────────┘');
+		console.log(top);
 
 		for (const [_, point] of this.state) {
-			const char = typeof point.value === 'number' ? toANSI(point.value) : '*';
+			let char = typeof point.value === 'number' ? toANSI(point.value) : black('*');
+			if (ghost.some((ghostPoint) => ghostPoint.x === point.x && ghostPoint.y === point.y) && point.value === '*') {
+				char = toANSI(this.current.position[0].value as number).replaceAll('■', '⬚');
+			}
 			row.push(char);
 
 			if (point.x === this.width - 1) {
-				let str: string = row.toString().replaceAll(',', ' ');
-				if (this.debugging) {
-					str =
-						i < 10
-							? boldRed(` ${i} `).concat(row.toString().replaceAll(',', ' '))
-							: boldRed(`${i} `).concat(row.toString().replaceAll(',', ' '));
-					i++;
+				let str: string = row.toString().replaceAll(',', ' ').concat(' ', bar);
+				if (i > 4 && j < next.length) {
+					str = str.concat('    ', next[j]);
+					j++;
 				}
+
+				if (i > 9 && k < hold.length) {
+					str = str.concat('    ', hold[k]);
+					k++;
+				}
+
+				if (i > 13 && l < level.length) {
+					str = str.concat('    ', level[l]);
+					l++;
+				}
+
 				console.log(str);
-				row = [];
+				i++;
+				row = [' ', bar];
 				continue;
 			}
 		}
+		console.log(bottom);
 		if (this.debugging) {
 			this.#debugPosition();
+			this.#debugGhostPosition();
+			this.#debugSwapped();
+			this.#debugLevel();
+			this.#debugLines();
+			this.#debugCombo();
+			this.#debugScore();
+			this.#debugSpeed();
 		}
 	}
 
-	#debugPosition = () => console.log(this.current.position.map(debugPoint).join('\n'));
-
-	#controls = `
-                        ${boldGreen('Controls')}
-               ${blue('┌────────────┬──────────────┐')}
-               ${blue('│')}    ${boldPurple('Key')}     ${blue('│')}    ${boldYellow('Action')}    ${blue('│')}
-               ${blue('├────────────┼──────────────┤')}
-               ${blue('│')}   ${purple('[w]')}      ${blue('│')}  ${yellow('Rotate')}      ${blue('│')}
-               ${blue('│')}   ${purple('[a]')}      ${blue('│')}  ${yellow('Move Left')}   ${blue('│')}
-               ${blue('│')}   ${purple('[d]')}      ${blue('│')}  ${yellow('Move Right')}  ${blue('│')}
-               ${blue('│')}   ${purple('[s]')}      ${blue('│')}  ${yellow('Move Down')}   ${blue('│')}
-               ${blue('│')}   ${purple('[e]')}      ${blue('│')}  ${yellow('Swap')}        ${blue('│')}
-               ${blue('│')}   ${purple('[space]')}  ${blue('│')}  ${yellow('Drop Piece')}  ${blue('│')}
-               ${blue('│')}   ${purple('[p]')}      ${blue('│')}  ${yellow('Pause')}       ${blue('│')}
-               ${blue('│')}   ${purple('[?]')}      ${blue('│')}  ${yellow('Hide Help')}   ${blue('│')}
-               ${blue('└────────────┴──────────────┘')}`;
-
-	#title = `
-${purple('──┘')}${yellow(' └───────────────────────────────────────────────┘ ')}${blue('└──')}
-${cyan('──┐ ')}${green('┌───────────────────────────────────────────────┐')} ${red('┌──')}
-${cyan('  │ ')}${green('│')} ████████╗███████╗████████╗██████╗ ██╗███████╗ ${green('│')} ${red('│')}
-${cyan('  │ ')}${green('│')} ╚══██╔══╝██╔════╝╚══██╔══╝██╔══██╗██║██╔════╝ ${green('│')} ${red('│')}
-${cyan('  │ ')}${green('│')}    ██║   █████╗     ██║   ██████╔╝██║███████╗ ${green('│')} ${red('│')}
-${cyan('  │ ')}${green('│')}    ██║   ██╔══╝     ██║   ██╔══██╗██║╚════██║ ${green('│')} ${red('│')}
-${cyan('  │ ')}${green('│')}    ██║   ███████╗   ██║   ██║  ██║██║███████║ ${green('│')} ${red('│')}
-${cyan('  │ ')}${green('│')}    ╚═╝   ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚══════╝ ${green('│')} ${red('│')}
-${cyan('──┘ ')}${green('└───────────────────────────────────────────────┘')} ${red('└──')}
-${red('──┐')} ${purple('┌───────────────────────────────────────────────┐')} ${yellow('┌──')}
-${red('  │')} ${purple('│')}     A ${strikethrough(italic('shitty'))} remake by ${underline('Roy E. Crippen IV')}      ${purple('│')} ${yellow('│')}
-
-                 Press ${green('enter')} to start
-                 Press ${yellow('?')} to toggle controls 
-                 Press ${red('ctrl + c')} to exit
-`;
+	#debugPosition = () =>
+		console.log(`\nPosition: ${blue('{')}\n`.concat(this.current.position.map(debugPoint).join('\n')).concat(`\n${blue('}')}`));
+	#debugGhostPosition = () =>
+		console.log(
+			`\nGhost Pos: ${blue('{')}\n`.concat(this.current.calculateGhost(this).map(debugPoint).join('\n')).concat(`\n${blue('}')}`),
+		);
+	#debugSwapped = () => console.log(`\nSwap : ${yellow(this.swapped.toString())}`);
+	#debugLevel = () => console.log(`Level: ${yellow(this.level.toString())}`);
+	#debugLines = () => console.log(`Lines: ${yellow(this.lines.toString())}`);
+	#debugCombo = () => console.log(`Combo: ${yellow(this.combo.toString())}`);
+	#debugScore = () => console.log(`Score: ${yellow(this.score.toString())}`);
+	#debugSpeed = () => console.log(`Speed: ${yellow(this.speed.toString())}`);
 
 	titleScreen() {
 		this.#resetState();
 
 		if (!this.help) {
 			console.clear();
-			console.log(this.#title);
+			console.log(title);
 		} else {
 			console.clear();
-			console.log(this.#title.concat(this.#controls));
+			console.log(title.concat(controls));
 		}
 	}
 }
@@ -592,14 +694,16 @@ onkeydown((event) => {
 		game.help = !game.help;
 		game.titleScreen();
 	}
-	event.name === 'return' && !game.started && game.newGame();
+
+	event.name === 'return' && !game.started && !game.over && game.newGame();
 	event.name === 'p' && game.started && game.pause();
 	event.name === 'space' && game.started && !game.paused && game.current.instaDrop(game);
 	event.name === 'w' && game.started && !game.paused && game.current.rotate(game) && game.frame();
 	event.name === 'a' && game.started && !game.paused && game.current.left(game) && game.frame();
 	event.name === 'd' && game.started && !game.paused && game.current.right(game) && game.frame();
 	event.name === 's' && game.started && !game.paused && game.current.down(game) && game.frame();
-	event.name === 'r' && game.started && game.paused && game.newGame();
-	event.name === 't' && game.started && game.paused && game.titleScreen();
-	event.name === 'q' && game.started && game.paused && exit();
+	event.name === 'e' && game.started && !game.paused && !game.swapped && game.swap();
+	event.name === 'r' && ((game.started && game.paused) || game.over) && game.newGame();
+	event.name === 't' && ((game.started && game.paused) || game.over) && game.titleScreen();
+	event.name === 'q' && ((game.started && game.paused) || game.over) && exit();
 });
